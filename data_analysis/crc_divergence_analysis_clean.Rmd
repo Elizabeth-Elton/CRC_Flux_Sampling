@@ -1,0 +1,485 @@
+---
+title: "crc_divergence_analysis_clean"
+output: html_document
+date: "2025-08-18"
+---
+
+```{r setup, include=FALSE, fig.width=12, fig.height=6}
+knitr::opts_chunk$set(echo = FALSE)
+options(scipen = 999999)
+library(tidyverse)
+library(R.matlab)
+library(FactoMineR)
+library(ggbeeswarm)
+library(pals)
+library(missMDA)
+library(pheatmap)
+library(dendsort)
+library(randomcoloR)
+library(ggh4x)
+library(ComplexHeatmap)
+library(dendextend)
+library(RColorBrewer)
+library(circlize)
+library(ggsignif)
+library(sfsmisc)
+
+custom_ccm_colors <- c("#82817E", "#850699", "#570699", "#FF00A2", "#FF9500", "#36C1FF", "#FA0202", "#FFFB00", "#004CFF", "#00730D", "#00FFBE", "#759909", "#7D4404")
+custom_crc_colors <- c("#A3A29F", "#AA5BB5", "#8952B6", "#FF71BB", "#FFB25B", "#84D2FF", "#FF6E4B", "#FFFC6D", "#8F89FF", "#70A566", "#7FFFD0", "#9CB459", "#A47448")
+
+rxn_names <- c('GLUT', 'HK', 'HPI', 'PFK', 'FBP', 'ALDO',
+        'TPI', 'GAPDH', '13DPG-phophatase', 'PGK', 'DPGM', 'DPGase',
+        'PGAM', 'ENO', 'PYK', 'PDH', 'G6PD', 'PGL',
+        '6PGDH', 'RPE', 'RPM', 'TA', 'TK1', 'TK2', 
+        'CS', 'CLY', 'IDH1', 'IDH3', 'IDH2', 'AKGD', 
+        'SCOAS', 'SDHA', 'SDHC(D)', 'FUM2', 'FUM1', 'MDH2', 
+        'MDH1', 'MMALIC', 'succinate-Q reductase', 'cytochrome oxidase', 'NADH-Q reductase', 'ATP synthase', 
+        'LDH', 'MCT', 'GLNS', 'GDH2', 'GDH1(3)', 'H2O (m<->c)', 
+        'O2 (m<->c)', 'CO2 (m<->c)', 'Pi (m<->c)', 'H (m<->c)', 'MPC', 'NADH (m<->c)', 
+        'NH4 (m<->c)', 'H2O (e<->c)', 'O2 (e<->c)', 'CO2 (e<->c)', 'Pi (e<->c)', 'H (e<->c)', 
+        'ASCT2', 'NH4 (e<->c)', 'H2O (b<->e)', 'O2 (b<->e)', 'CO2 (b<->e)', 'Pi (b<->e)', 
+        'H (b<->e)', 'Lac (b<->e)', 'Glc (b<->e)', 'Gln (b<->e)', 'NH4 (b<->e)', 'ATPase', 
+        'biomass_obj', 'GS')
+
+rxn_names <- as.data.frame(rxn_names)
+
+glycolysis_rxns <- c('GLUT', 'HK', 'HPI', 'PFK', 'FBP', 'ALDO',
+        'TPI', 'GAPDH', '13DPG-phophatase', 'PGK', 'DPGM', 'DPGase',
+        'PGAM', 'ENO', 'PYK', 'LDH', 'MCT')
+tca_rxns <- c('PDH', 'CS', 'CLY', 'IDH1', 'IDH3', 'IDH2', 'AKGD', 
+        'SCOAS', 'SDHA', 'SDHC(D)', 'FUM2', 'FUM1', 'MDH2', 
+        'MDH1', 'MMALIC', 'succinate-Q reductase', 'cytochrome oxidase', 'NADH-Q reductase', 'ATP synthase', 'ATPase')
+ppp_rxns <- c('G6PD', 'PGL', '6PGDH', 'RPE', 'RPM', 'TA', 'TK1', 'TK2')
+glutaminolysis_rxns <- c('GS', 'GLNS', 'GDH2', 'GDH1(3)')
+transport_exchange_rxns <- c('H2O (m<->c)', 'O2 (m<->c)', 'CO2 (m<->c)', 'Pi (m<->c)', 'H (m<->c)', 'MPC', 'NADH (m<->c)', 
+        'NH4 (m<->c)', 'H2O (e<->c)', 'O2 (e<->c)', 'CO2 (e<->c)', 'Pi (e<->c)', 'H (e<->c)', 
+        'ASCT2', 'NH4 (e<->c)', 'H2O (b<->e)', 'O2 (b<->e)', 'CO2 (b<->e)', 'Pi (b<->e)', 
+        'H (b<->e)', 'Lac (b<->e)', 'Glc (b<->e)', 'Gln (b<->e)', 'NH4 (b<->e)')
+biomass_rxns <- c('biomass_obj')
+
+mod_dendrogram_order <- as.data.frame(c("base", "40_41_LDH", "20_41_LDH", "100_11_PGAM", "100_13_PYK", "80_0_HK", "100_12_ENO", 
+                          "60_6_GAPDH", "100_0_HK", "100_1_HPI", "100_15_G6PDH", "80_1_HPI", "60_4_ALDO"))
+colnames(mod_dendrogram_order) <- "models"
+
+model_labels_dendro <- c("Base Model", "LDH 40%", "LDH 20%", "PGAM 100%", "PYK 100%", "HK 80%", "ENO 100%", "GAPDH 60%", "HK 100%", "HPI 100%", "G6PDH 100%", "HPI 80%", "ALDO 60%")
+new_color_df <- tibble(model_cond = paste(model_labels_dendro, c(rep("CCM", length(model_labels_dendro)), rep("CRC", length(model_labels_dendro))), sep = "_"),
+                       colors = c(custom_ccm_colors, custom_crc_colors)) 
+
+ordered_model_list <- c('100_13_PYK', '60_6_GAPDH','100_15_G6PDH', '100_12_ENO','60_4_ALDO','40_41_LDH','100_1_HPI','100_0_HK','20_41_LDH','80_1_HPI','80_0_HK','100_11_PGAM', 'base')
+ordered_model_df <- bind_cols(ordered_model_list, unname(glasbey(13)))
+colnames(ordered_model_df) <- c('models', 'colors')
+idkman <- left_join(mod_dendrogram_order, ordered_model_df) #fix this or get rid of
+
+model_labels_dendro_crc <-as.data.frame(c("base", "60_6_GAPDH", "100_13_PYK", "100_12_ENO", "60_4_ALDO", "80_0_HK", "100_11_PGAM","80_1_HPI","100_1_HPI","40_41_LDH", "20_41_LDH", "100_15_G6PDH","100_0_HK"))
+
+colnames(model_labels_dendro_crc) <- "models"
+
+new_color_df <- tibble(model_cond = paste(model_labels_dendro, c(rep("CCM", length(model_labels_dendro)), rep("CRC", length(model_labels_dendro))), sep = "_"),
+                       colors = c(custom_ccm_colors, custom_crc_colors)) 
+
+new_color_df_crc <- new_color_df %>% 
+  filter(str_detect(model_cond, pattern = 'CRC')) %>%
+  mutate(model_clean = str_remove(model_cond, pattern = "_CRC")) %>%
+  arrange(model_clean) 
+```
+
+#import sampling data
+```{r}
+rxn_list_crc <- R.matlab::readMat('data/rxn_names_labelled_crc.mat') 
+
+# import samples for the unperturbed model
+base_samp_crc <- R.matlab::readMat('data/base_crc_model_samples_1.mat')
+base_samp_crc <- base_samp_crc$points
+base_rxns_crc <- rxn_names %>% filter(!rxn_names %in% c('RPM', 'CLY', 'Gln (b<->e)')) #reactions removed in the base model bc no flux
+rownames(base_samp_crc) <- base_rxns_crc$rxn_names 
+base_samp_crc <- as.data.frame(t(base_samp_crc)) 
+base_samp_crc$model <- rep('base')
+
+# import the sampling data for the knockdown models
+samp_list_crc <- list.files('data/sampling_results_crc') %>% as.data.frame()
+colnames(samp_list_crc) <- c('files')
+samp_list_crc <- samp_list_crc %>% filter(str_detect(files, pattern = 'samples'))
+samp_list_crc$files <- samp_list_crc[c(1, 3:6, 2, 7:nrow(samp_list_crc)), ] #subset models with rxns that are constant, defined flux  - not strictly necessary bc of how files are read in
+
+samp_data_crc <- list()
+for (j in 1:length(samp_list_crc$files)){
+  samp_data_crc[[j]] <- R.matlab::readMat(paste0('data/sampling_results_crc/', samp_list_crc$files[j]))
+  samp_data_crc[[j]] <- samp_data_crc[[j]]$points
+  samp_data_crc[[j]] <- as.data.frame(samp_data_crc[[j]])
+  samp_data_crc[[j]]$rxn_names <- unlist(rxn_list_crc[["labels"]][[j]])
+  samp_data_crc[[j]] <- left_join(rxn_names, samp_data_crc[[j]], by = 'rxn_names')
+  #remove rxn names, transpose, bind together, then make the colnames the reaction names
+  samp_data_crc[[j]]$rxn_names <- NULL
+  samp_data_crc[[j]] <- as.data.frame(t(samp_data_crc[[j]]))
+  samp_data_crc[[j]]$model <- rep(samp_list_crc$files[j])
+}
+
+all_samp_data_crc <- bind_rows(samp_data_crc)
+colnames(all_samp_data_crc)[1:74] <- rxn_names$rxn_names
+
+all_samp_data_crc <- all_samp_data_crc %>% mutate_all(~replace_na(., 0)) 
+all_samp_data_crc <- all_samp_data_crc %>% select_if(~!all(is.na(.)))
+
+full_samp_data_crc <- bind_rows(base_samp_crc, all_samp_data_crc) %>% 
+  mutate_all(~replace_na(., 0))
+
+# write just the base crc model for later rep learning
+base_to_write_crc <- R.matlab::readMat('data/base_crc_model_samples_1.mat')
+base_to_write_crc <- base_to_write_crc$points
+base_to_write_crc <- as.data.frame(base_to_write_crc) %>%
+  mutate('rxn_names' = base_rxns_crc$rxn_names)
+ 
+base_to_write_crc <- left_join(rxn_names, base_to_write_crc, by = 'rxn_names')
+base_to_write_crc$rxn_names <- NULL
+base_to_write_crc <- as.data.frame(t(base_to_write_crc)) %>% mutate_all(~replace_na(., 0))
+
+#write_csv(base_to_write_crc, 'data/sampling_results_rp/base_kras_crc.csv', col_names = FALSE)
+```
+
+# Supplemental Figure 1, Figure 4
+# boxplots of flux sampling data for each reaction, model
+```{r}
+# filter for columns not in transport_exchange_rxns
+samp_data_not_te_crc <- full_samp_data_crc %>% 
+  select(colnames(full_samp_data_crc)[!colnames(full_samp_data_crc) %in% transport_exchange_rxns]) %>%
+  mutate(model = str_remove(model, pattern = 'kras_crc_'),
+         model = str_remove(model, pattern = '_samples_1.mat')) %>%
+   mutate(model = ordered(model, levels = mod_dendrogram_order$models),
+          condition = "CRC")
+
+load('data/ccm_sampling_data.RData') # from ccm_divergence_analysis_clean.Rmd 
+all_data_not_te <- bind_rows(samp_data_not_te, samp_data_not_te_crc) 
+
+mod.labs <- model_labels_dendro
+names(mod.labs) <- mod_dendrogram_order$models
+
+all_data_not_te <- left_join(all_data_not_te, what_if) %>%
+  mutate(Model = ordered(Model, levels = model_labels_dendro)) %>%
+ # arrange(Model) %>%
+  mutate(model_cond = paste(Model, condition, sep = "_"),
+         model_cond = ordered(model_cond, levels = new_color_df$model_cond)) %>%
+  arrange(model_cond)
+
+# Supplemental Figure 1
+lyst <- colnames(samp_data_not_te)[1:48]
+rxn_hist_plots <- lapply(lyst, function(i)ggplot(all_data_not_te) +
+    geom_boxplot(aes(x=condition, y=.data[[i]], fill=interaction(condition,Model), color=Model), alpha = 0.5, linewidth=1.5, outlier.size = 5) +
+      geom_hline(aes(yintercept = 0), linetype = 'dashed', color = 'darkgray') +
+   scale_colour_manual(values=new_color_df$colors) +
+     scale_fill_manual(values=c(new_color_df$colors[1], "white",
+                              new_color_df$colors[2], "white",
+                              new_color_df$colors[3], "white",
+                              new_color_df$colors[4], "white",
+                              new_color_df$colors[5], "white",
+                              new_color_df$colors[6], "white",
+                              new_color_df$colors[7], "white",
+                              new_color_df$colors[8], "white",
+                              new_color_df$colors[9], "white",
+                              new_color_df$colors[10], "white",
+                              new_color_df$colors[11], "white",
+                              new_color_df$colors[12], "white",
+                              new_color_df$colors[13], "white")) +
+       theme_minimal() +
+     scale_x_discrete(labels = c("CCM", "CRC")) +
+   facet_grid(cols=vars(Model), switch = "x", scales = "free_x") +
+      theme(legend.position = "none",
+         text = element_text(size=24),
+         panel.spacing = unit(0, "lines"), 
+         strip.background = element_blank(),
+         strip.placement = "outside") +
+    ggtitle(i) +
+    labs(x=" ",
+         y = "Flux",
+         ) +
+    guides(color = "none")
+   ) 
+
+rxn_hist_plots[[46]]
+# save the  plots
+# for(i in 1:48){
+#   ggsave(plot = rxn_hist_plots[[i]], file = paste("samp_distribution_plots/ccm_crc_",lyst[i],".png",sep=""),
+#          width = 14)
+# }
+```
+
+# Figure 4 - boxplots of predicted biomass flux
+```{r}
+what_if <- bind_cols(idkman, model_labels_dendro)
+colnames(what_if)[3] <- 'Model'
+colnames(what_if)[1] <- 'model'
+
+biomass_data <- all_data_not_te %>% 
+  select(model, biomass_obj, condition) 
+
+biomass_data <- left_join(biomass_data, what_if) %>%
+  mutate(Model = ordered(Model, levels = model_labels_dendro)) %>%
+  arrange(Model)
+
+ggplot(biomass_data) +
+  geom_boxplot(aes(x=condition, y=biomass_obj, fill=interaction(condition,Model), color=Model), linewidth=1.5, outlier.size = 5, alpha = 0.5) +
+      geom_hline(aes(yintercept = 0), linetype = 'dashed', color = 'darkgray') +
+  geom_signif(aes(x=condition, y=biomass_obj),
+    comparisons = list(c("CCM", "CRC")),
+    textsize = 8,
+    test = "ks.test", map_signif_level=c("***"=0.001,"**"=0.01, "*"=0.05, " "=2)) +
+   scale_colour_manual(values=new_color_df$colors) +
+   scale_fill_manual(values=c(new_color_df$colors[1], "white",
+                              new_color_df$colors[2], "white",
+                              new_color_df$colors[3], "white",
+                              new_color_df$colors[4], "white",
+                              new_color_df$colors[5], "white",
+                              new_color_df$colors[6], "white",
+                              new_color_df$colors[7], "white",
+                              new_color_df$colors[8], "white",
+                              new_color_df$colors[9], "white",
+                              new_color_df$colors[10], "white",
+                              new_color_df$colors[11], "white",
+                              new_color_df$colors[12], "white",
+                              new_color_df$colors[13], "white")) + 
+       theme_minimal() +
+  scale_x_discrete(labels = c("CCM", "CRC")) +
+  facet_grid(cols=vars(Model), switch = "x", scales = "free_x") +
+    theme(legend.position = "none",
+         text = element_text(size=24),
+         panel.spacing = unit(0, "lines"), 
+         strip.background = element_blank(),
+         strip.placement = "outside") +
+    labs(x=" ",
+         y = "Flux", 
+         title = " ") 
+#ggsave("ccm_crc_biomass_plot_newpal.pdf", width = 28, height = 14)
+```
+
+# ks tests for biomass data, table of mean and sd biomass data - Supplemental Table 2
+```{r}
+ks_results <- lapply(unique(biomass_data$Model), function(model) {
+  ks.test(biomass_data$biomass_obj[biomass_data$condition == 'CCM' & biomass_data$Model == model], 
+          biomass_data$biomass_obj[biomass_data$condition == 'CRC' & biomass_data$Model == model], 
+          alternative = "two.sided")
+})
+
+# name the list elements with the model names
+ks_results <- setNames(ks_results, unique(biomass_data$Model))
+
+# make a dataframe of the mode names and p_values from the ks_results
+ks_results_df <- data.frame(Model = names(ks_results), 
+                             p_value = sapply(ks_results, function(x) x$p.value))
+
+# apply fdr test corrections to the p_values
+ks_results_df <- ks_results_df %>%
+  mutate(p_value_fdr = p.adjust(p_value, method = "fdr")) %>%
+  arrange(p_value_fdr)
+
+#find the mean biomass value for each model under each condition
+mean_biomass_data <- biomass_data %>%
+  group_by(Model, condition) %>%
+  summarise(sd_biomass = sd(biomass_obj),
+            mean_biomass = mean(biomass_obj, na.rm = TRUE)) %>%
+  ungroup() %>%
+  arrange(Model, condition)
+
+mean_biomass_tbl <- mean_biomass_data %>%
+  pivot_wider(names_from = condition, values_from = c(mean_biomass, sd_biomass)) #
+
+plspls <- mean_biomass_tbl %>%
+  mutate(mean_biomass_CRC = pretty10exp(mean_biomass_tbl$mean_biomass_CRC, digits = 3, lab.type = "latex"),
+         mean_biomass_CCM = pretty10exp(mean_biomass_CCM, digits = 3, lab.type = "latex"),
+         sd_biomass_CRC = pretty10exp(sd_biomass_CRC, digits = 3, lab.type = "latex"),
+         sd_biomass_CCM = pretty10exp(sd_biomass_CCM, digits = 3, lab.type = "latex"),
+         CCM = paste0(mean_biomass_CCM, " ± ", sd_biomass_CCM),
+         CRC = paste0(mean_biomass_CRC, " ± ", sd_biomass_CRC)) %>%
+  arrange(Model)
+
+plspls_tbl <- plspls %>%
+  select(Model, CCM, CRC)
+
+kbl(plspls_tbl, format = "html", digits = 3, 
+      col.names = c("Model", "CCM", "CRC")) %>%
+  kable_styling(full_width = FALSE, position = "left")
+
+#write_csv(plspls_tbl, 'mean_biomass_data_tbl3.csv')
+```
+
+# Find the mean of each reaction in each model for clustering
+```{r, height=3, width=12}
+# find the mean for each reaction (column) within each model (row)
+mean_samp_data_crc <- full_samp_data_crc %>%
+  mutate(model = str_remove(model, pattern = 'kras_crc_'), 
+         model = str_remove(model, pattern = '_samples_1.mat')) %>%
+  group_by(model) %>%
+  summarise_all(mean)
+
+this_is_how_it_is <- c("HK 100%", "PGAM 100%", "ENO 100%", "PYK 100%", "G6PDH 100%", "HPI 100%", "LDH 20%", "LDH 40%", "ALDO 60%",  "GAPDH 60%", "HK 80%", "HPI 80%", "Base Model") # this is the nice version of mean_samp_data_crc$model
+
+mean_samp_data_crc[,73:75] <- NULL # make 0 columns null for later matrix manipulation
+
+rxns_in_order_crc <- as_data_frame(c(glycolysis_rxns, tca_rxns, ppp_rxns, glutaminolysis_rxns, transport_exchange_rxns, biomass_rxns)) %>% 
+  filter(value %in% colnames(mean_samp_data_crc)) %>%
+  mutate(Subsystem = case_when(value %in% glycolysis_rxns ~ 'Glycolysis',
+                               value %in% tca_rxns ~ 'TCA',
+                               value %in% ppp_rxns ~ 'PPP',
+                               value %in% glutaminolysis_rxns ~ 'Glutaminolysis',
+                               value %in% transport_exchange_rxns ~ 'Transport & Exchange',
+                               .default = 'Biomass'))
+
+mean_samp_matrix_crc <- mean_samp_data_crc %>%
+  column_to_rownames('model') %>%
+  as.matrix()
+mean_samp_matrix_ordered_crc <- mean_samp_data_crc[rxns_in_order_crc$value]
+rownames(mean_samp_matrix_ordered_crc) <- this_is_how_it_is
+
+# perform clustering on mean flux columns
+mat_cluster_rows_crc <- hclust(dist(mean_samp_matrix_ordered_crc))
+sort_hclust <- function(...) as.hclust(dendsort(as.dendrogram(...)))
+mat_cluster_rows_crc <- sort_hclust(mat_cluster_rows_crc)
+
+#plot dendrogram for Figure 2
+as.dendrogram(rev(mat_cluster_rows_crc)) %>%
+  plot(main = "CRC", xlab = "", sub = "", 
+       ylim = c(-10, 100), 
+       ylab = "Height")
+
+# annotation data for heatmap
+annotation_col_crc <- rxns_in_order_crc %>%
+  column_to_rownames("value") %>%
+  rename('Pathway' = 'Subsystem')
+annotation_crc2 <- annotation_col_crc %>%
+  mutate(Pathway = ifelse(Pathway == "Biomass", " ", Pathway))
+pathway_split_crc <- annotation_crc2$Pathway
+
+colnames(mean_samp_matrix_ordered_crc)[71] <- "Biomass"
+
+model_annotations_crc <- data.frame(
+  Model = ordered(rownames(mean_samp_matrix_ordered_crc), levels = model_labels_dendro)) %>% arrange(Model)
+rownames(model_annotations_crc) <- model_annotations_crc$Model
+
+```
+
+# Figure 2 - heatmap with even color breaks
+```{r}
+#col_fun = colorRamp2(c(-3, 0, 3), c("#a9590e", "#F5EDED", "#9678ad"))
+#col_fun(seq(-3, 3, by = 0.01))
+
+bk1 <- c(seq(-3,-0.1,by=0.01),-0.001)
+bk2 <- c(0.001,seq(0.1,3,by=0.01))
+bk <- c(bk1,bk2)  #combine the break limits for purpose of graphing
+
+my_palette <- c(colorRampPalette(colors = c('#703b0a', '#a9590e', '#e17713', '#f0bb89', '#f8ddc4'))(n = length(bk1)-1),
+              "white", "white",
+              c(colorRampPalette(colors = c('#dbd2e6', '#b698cd', '#9678ad', '#645073', '#32283a'))(n = length(bk2)-1)))
+
+crc_even <- ComplexHeatmap::pheatmap(
+  t(mean_samp_matrix_ordered_crc),
+  color = my_palette,
+  breaks = bk,  
+  name = "Flux",
+  annotation_col = rev(model_annotations_crc),
+  annotation_colors = list(
+    Model = setNames(new_color_df$colors[14:26], model_labels_dendro)
+  ),
+  annotation_names_col = FALSE,
+  cluster_rows = FALSE,
+  cluster_cols = rev(mat_cluster_rows_crc),
+  fontsize_row = 7,
+  fontsize_col = 7,
+  row_split = pathway_split_crc,
+  row_gap = unit(1.5, "mm"),
+  row_title_gp = gpar(fontsize = 7), 
+  legend = FALSE,
+  heatmap_legend_param = list(
+    direction = "horizontal",
+    title = "Flux"
+  )
+)
+
+crc_even
+```
+
+# Full Figure 2 - plot the ccm and crc heatmaps together and save
+```{r}
+ccm_even <- readRDS('ccm_heatmap_nice.rds')
+#png("ccm-crc_heatmap_even-breaks2.png", width = 7.8, height = 8.38, units = "in", res = 300)
+draw(ccm_even + crc_even, merge_legend=FALSE, heatmap_legend_side = "bottom", annotation_legend_side = "right")
+#dev.off()
+```
+
+# Figure 3 - boxplots of fluxes through each pathway in each model
+# Summed fluxes through pathways in each model
+```{r, fig.width=6, fig.height=14}
+full_summed_crc <- full_samp_data_crc %>%
+ # group_by(model) %>%
+  mutate(glycolysis_sum = rowSums(across(all_of(glycolysis_rxns))),
+         tca_sum = rowSums(across(all_of(tca_rxns))),
+         ppp_sum = rowSums(across(all_of(ppp_rxns))),
+         glutaminolysis_sum = rowSums(across(all_of(glutaminolysis_rxns))),
+         transport_exchange_sum = rowSums(across(all_of(transport_exchange_rxns))),
+         biomass_sum = rowSums(across(all_of(biomass_rxns)))) %>%
+  select(model, glycolysis_sum, tca_sum, ppp_sum, glutaminolysis_sum, transport_exchange_sum, biomass_sum) %>%
+  pivot_longer(cols = c(glycolysis_sum, tca_sum, ppp_sum, glutaminolysis_sum, transport_exchange_sum, biomass_sum), 
+               names_to = 'subsystem', values_to = 'sum_flux') %>%
+  mutate(subsystem = str_remove(subsystem, pattern = '_sum')) %>%
+  group_by(model, subsystem) %>%
+  mutate(mean_sum = mean(sum_flux)) %>%
+  mutate(sd_sum = sd(sum_flux)) %>%
+  distinct(model, subsystem, mean_sum, sd_sum) %>%
+  mutate(model = str_remove(model, pattern = 'kras_crc_')) %>%
+  mutate(model = str_remove(model, pattern = '_samples_1.mat')) %>%
+  mutate(model = ordered(model, levels = mod_dendrogram_order$models)) %>%
+  arrange(model)
+ 
+base_mean_sum_crc <- full_summed_crc %>%
+  filter(model == 'base') %>%
+  select(subsystem, mean_sum, subsystem)
+
+full_summed_crc_no_biomass <- full_summed_crc %>%
+  filter(subsystem != 'biomass') %>%
+  filter(subsystem != 'transport_exchange') %>%
+  mutate(subsystem = factor(subsystem, levels = c('glycolysis', 'tca', 'ppp', 'glutaminolysis'))) %>%
+  arrange(model, subsystem)
+
+base_mean_sum_crc_no_biomass <- base_mean_sum_crc %>%
+  filter(subsystem != 'transport_exchange')  %>%
+  filter(subsystem != 'biomass')
+
+# change y axis limits for each facet to match the limits of the ccm plot
+custom_y2 <- list(
+  scale_y_continuous(limits = c(0, 13)),
+  scale_y_continuous(limits = c(0, 34.44126)),
+  scale_y_continuous(limits = c(-0.75, 1.50153)),
+  scale_y_continuous(limits = c(0, 43.00999)) #,
+ # scale_y_continuous(limits = c(-460, 460))
+)
+
+# plot the sum flux of each pathway in each model
+summed_flux_crc_plot <- ggplot(full_summed_crc_no_biomass) +
+  geom_hline(data = base_mean_sum_crc_no_biomass, aes(yintercept = mean_sum), color='darkgray', linetype='dashed') +
+    geom_bar(aes(x=model, y=mean_sum), stat='identity', position='dodge', fill="white") +
+  geom_bar(aes(x=model, y=mean_sum, fill=model), stat='identity', position='dodge') +
+  geom_errorbar(aes(x=model, ymin=mean_sum-sd_sum, ymax=mean_sum+sd_sum), width=0.2) +
+  scale_fill_manual(labels= model_labels_dendro, values=new_color_df$colors[14:26]) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_blank(),
+    panel.grid.minor = element_line(linewidth = 0.1), panel.grid.major = element_line(linewidth = 0.25),
+    legend.position = "bottom",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    plot.title = element_text(hjust = 0.5),
+    strip.text.x = element_blank(),
+    panel.spacing = unit(3, "lines")
+    ) +
+  labs(title = "CRC",
+       x = ' ',
+       y = 'Mean Sum of Fluxes',
+       fill = "Model") +
+  facet_wrap(vars(subsystem), scales = 'free',
+             ncol = 1) +
+  facetted_pos_scales(y = custom_y2)
+summed_flux_crc_plot
+
+#ggsave("mean_sum_fluxes_crc_newpal22.pdf", width = 6, height = 14)
+```
+
+
+
+

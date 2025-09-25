@@ -1,0 +1,513 @@
+---
+title: "dimensionality_reduction_analysis"
+output: html_document
+date: "2025-08-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(keras)
+library(tensorflow)
+library(pals)
+library(kableExtra)
+library(geometry)
+library(corrplot)
+library(ggpattern)
+library(ggbeeswarm)
+library(ggrepel)
+
+custom_ccm_colors <- c("#82817E", "#850699", "#570699", "#FF00A2", "#FF9500", "#36C1FF", "#FA0202", "#FFFB00", "#004CFF", "#00730D", "#00FFBE", "#759909", "#7D4404")
+
+custom_crc_colors <- c("#A3A29F", "#AA5BB5", "#8952B6", "#FF71BB", "#FFB25B", "#84D2FF", "#FF6E4B", "#FFFC6D", "#8F89FF", "#70A566", "#7FFFD0", "#9CB459", "#A47448")
+
+# read in rxn names, but remove #s 1, 44, 61, and 73 (constants)
+rxn_names <- c('GLUT', 'HK', 'HPI', 'PFK', 'FBP', 'ALDO',
+        'TPI', 'GAPDH', '13DPG-phophatase', 'PGK', 'DPGM', 'DPGase',
+        'PGAM', 'ENO', 'PYK', 'PDH', 'G6PDH', 'PGL',
+        '6PGDH', 'RPE', 'RPM', 'TA', 'TK1', 'TK2', 
+        'CS', 'CLY', 'IDH1', 'IDH3', 'IDH2', 'AKGD', 
+        'SCOAS', 'SDHA', 'SDHC(D)', 'FUM2', 'FUM1', 'MDH2', 
+        'MDH1', 'MMALIC', 'succinate-Q reductase', 'cytochrome oxidase', 'NADH-Q reductase', 'ATP synthase', 
+        'LDH', 'MCT', 'GLNS', 'GDH2', 'GDH1(3)', 'H2O (m<->c)', 
+        'O2 (m<->c)', 'CO2 (m<->c)', 'Pi (m<->c)', 'H (m<->c)', 'MPC', 'NADH (m<->c)', 
+        'NH4 (m<->c)', 'H2O (e<->c)', 'O2 (e<->c)', 'CO2 (e<->c)', 'Pi (e<->c)', 'H (e<->c)', 
+        'Gln (e<->i)', 'NH4 (e<->c)', 'H2O (b<->e)', 'O2 (b<->e)', 'CO2 (b<->e)', 'Pi (b<->e)', 
+        'H (b<->e)', 'Lac (b<->e)', 'Glc (b<->e)', 'Gln (b<->e)', 'NH4 (b<->e)', 'ATPase', 
+        'biomass_obj', 'GS')
+
+rxn_names_filt <- rxn_names[-c(1, 44, 61, 73)]
+
+rxn_long <- rep(rxn_names_filt, times = 5)
+
+glycolysis_rxns <- c('GLUT', 'HK', 'HPI', 'PFK', 'FBP', 'ALDO',
+        'TPI', 'GAPDH', '13DPG-phophatase', 'PGK', 'DPGM', 'DPGase',
+        'PGAM', 'ENO', 'PYK', 'LDH', 'MCT')
+
+tca_rxns <- c('PDH', 'CS', 'CLY', 'IDH1', 'IDH3', 'IDH2', 'AKGD', 
+        'SCOAS', 'SDHA', 'SDHC(D)', 'FUM2', 'FUM1', 'MDH2', 
+        'MDH1', 'MMALIC', 'succinate-Q reductase', 'cytochrome oxidase', 'NADH-Q reductase', 'ATP synthase', 'ATPase')
+
+ppp_rxns <- c('G6PD', 'PGL', '6PGDH', 'RPE', 'RPM', 'TA', 'TK1', 'TK2')
+
+glutaminolysis_rxns <- c('GS', 'GLNS', 'GDH2', 'GDH1(3)')
+
+transport_exchange_rxns <- c('H2O (m<->c)', 'O2 (m<->c)', 'CO2 (m<->c)', 'Pi (m<->c)', 'H (m<->c)', 'MPC', 'NADH (m<->c)', 
+        'NH4 (m<->c)', 'H2O (e<->c)', 'O2 (e<->c)', 'CO2 (e<->c)', 'Pi (e<->c)', 'H (e<->c)', 
+        'ASCT2', 'NH4 (e<->c)', 'H2O (b<->e)', 'O2 (b<->e)', 'CO2 (b<->e)', 'Pi (b<->e)', 
+        'H (b<->e)', 'Lac (b<->e)', 'Glc (b<->e)', 'Gln (b<->e)', 'NH4 (b<->e)')
+
+biomass_rxns <- c('biomass_obj')
+
+ordered_knockdown_list <- c('100_PYK', '60_GAPDH','100_G6PDH', '100_ENO','60_ALDO','40_LDH','100_HPI','100_HK','20_LDH','80_HPI','80_HK','100_PGAM', 'base_kras')
+
+mod_dendrogram_order_rl <- as.data.frame(c("base_kras", "40_LDH", "20_LDH", "100_PGAM", "100_PYK", "80_HK", "100_ENO", 
+                          "60_GAPDH", "100_HK", "100_HPI", "100_G6PDH", "80_HPI", "60_ALDO"))
+
+model_labels_dendro <- c("Base Model", "LDH 40%", "LDH 20%", "PGAM 100%", "PYK 100%", "HK 80%", "ENO 100%", "GAPDH 60%", "HK 100%", "HPI 100%", "G6PDH 100%", "HPI 80%", "ALDO 60%")
+```
+
+# Isolate models of interest
+
+# load in csvs - filter for kras_caf
+```{r}
+kd_data = list.files("data/ebethCsvs/", full.names = TRUE)
+
+file_list = lapply(kd_data, read_csv, col_names = rxn_names)
+names(file_list) = str_remove(list.files("data/ebethCsvs/"), pattern = "\\.csv") 
+
+kras_caf_data <- file_list[grep("kras_caf", names(file_list))]
+```
+
+# get labels from python analysis
+```{python}
+import numpy as np
+
+sims = []
+labels = []
+newlabs=[]
+uniqueLabels = []
+
+for i in ['wt', 'kras']:
+	for j in ['caf', 'crc']:
+		for k in ['20', '40', '60', '80', '100']:
+			s = np.loadtxt('data/ebethCsvs/'+i+'_'+j+'_'+k+'.csv', delimiter=',')
+			for q in range(s.shape[0]):
+				labels.append(i+'_'+j)
+				newlabs.append(k)
+				uniqueLabels.append(i+'_'+j+'_'+k+'_'+str(q))
+			sims.append(s)
+			
+r.uniqueLabels = uniqueLabels
+```
+
+
+# load in original model data 
+```{r}
+model_data <- read_csv("data/model_data.csv")
+
+rxn_data <- model_data %>%
+  mutate('reaction' = uniqueLabels)
+
+kras_caf_model <- rxn_data %>% filter(str_detect(reaction, pattern="kras_caf"))
+
+kras_caf_model_labelled <- bind_cols(kras_caf_model, rxn_long) %>%
+  mutate('reaction_name' = paste(reaction, rxn_long, sep="_"))
+
+kras_caf_model_labelled <- kras_caf_model_labelled[-1]
+
+colnames(kras_caf_model_labelled) <- c('X', 'Y', 'percent_group', 'rxn_name', 'reaction')
+```
+
+# calc centroid, calc distance
+```{r}
+centroid_x = mean(kras_caf_model_labelled$X)
+centroid_y = mean(kras_caf_model_labelled$Y)
+
+kras_caf_model_labelled <- kras_caf_model_labelled %>%
+  mutate(mod_dist = sqrt((kras_caf_model_labelled$X - centroid_x)^2 +(kras_caf_model_labelled$Y - centroid_y)^2))
+```
+
+# find furthest models, return list
+```{r fig.width=8, fig.height=8}
+# 5% is 17.5 -> round to 18
+kras_caf_model_top <- kras_caf_model_labelled %>%
+  arrange(mod_dist) %>%
+  top_n(18)
+
+# select top rxns that aren't transport and exchange
+top_rxn_not_exchange <- kras_caf_model_top %>%
+  filter(str_detect(reaction, pattern = "\\(", negate = TRUE)) %>%
+  mutate(rxn_number = str_extract(percent_group, pattern = "[:digit:]+$")) %>%
+  mutate(rxn_number = as.double(rxn_number) + 2) %>% #add 2 bc reaction #s are offset by 2: 1 for starting count at 0, 1 for removing rxn number 1
+  mutate(percent_kd = str_extract(percent_group, pattern = "\\_[:digit:]+\\_")) %>%
+  mutate(percent_kd = str_extract(percent_kd, pattern = "[:digit:]+")) %>%
+  mutate(percent_as_deci = as.numeric(percent_kd)/100) %>%
+  arrange(desc(mod_dist))
+
+top_rxn_not_exchange$reaction
+
+# reaction number | percent as decimal | 1 | rxn/model name | 0 | 0 | 0 | rxn/moddel name _samples
+matlab_vars <- top_rxn_not_exchange %>% select(c(rxn_number, percent_as_deci, reaction))
+
+#write_csv(matlab_vars, file = 'top_kd_rxns_ccm.csv')
+
+top_rxn_not_exchange <- top_rxn_not_exchange %>%
+  mutate(model = str_remove(reaction, pattern = "kras_caf_"))
+
+# plot the representation learning projection of our top kras_caf kd models of interest
+ggplot() +
+  geom_point(data=kras_caf_model_labelled, aes(x=X, y=Y), size = 3, color='gray') +
+  geom_point(data=top_rxn_not_exchange, aes(x=X, y=Y), size = 3, color='black') +
+  xlim(7,10) +
+  ylim(-3,1) +
+  annotate("point", x = centroid_x, y = centroid_y, colour = "blue", shape = 'X', size = 5) +
+  theme_minimal() +
+  scale_colour_manual(values=unname(cols25())) +
+  theme_bw()
+
+```
+
+# Rep learning analysis of sampling data for BOTH THE CAF AND CRC DATA
+
+# python labels
+```{python}
+import numpy as np
+			
+sims = []
+labels = []
+uniqueLabels = []
+		
+for i in [ 'base_kras_caf', 'caf_80_HPI', 'caf_80_HK', 'caf_60_GAPDH', 'caf_60_ALDO', 
+    'caf_40_LDH', 'caf_20_LDH', 'caf_100_HPI', 'caf_100_G6PDH', 
+    'caf_100_PYK', 'caf_100_ENO', 'caf_100_PGAM', 'caf_100_HK',
+    'base_kras_crc', 'crc_80_HPI', 'crc_80_HK', 'crc_60_GAPDH', 'crc_60_ALDO', 
+    'crc_40_LDH', 'crc_20_LDH', 'crc_100_HPI', 'crc_100_G6PDH', 
+    'crc_100_PYK', 'crc_100_ENO', 'crc_100_PGAM', 'crc_100_HK']:
+	s = np.loadtxt('data/sampling_results_rp/'+i+'.csv', delimiter=',')
+	for q in range(s.shape[0]):
+		labels.append(i)
+		uniqueLabels.append(i+'_'+str(q))
+	sims.append(s)	
+
+r.uniqueLabels = uniqueLabels
+r.labels = labels
+```
+
+# load in model data for the nn applied to sampling data from both media conditions
+```{r}
+model_data <- read_csv("data/projection_data_12.csv")
+
+model_data <- model_data %>%
+  rename('X' = 'Dim1', 'Y' = 'Dim2') %>% 
+  group_by(ModelLabel) %>%
+  mutate(centroid_x = mean(X), centroid_y = mean(Y)) %>%
+  mutate(condition = str_extract(ModelLabel, pattern = "caf|crc")) %>%
+  mutate(knockdown = str_remove(ModelLabel, pattern = "_caf|_crc|caf_|crc_")) %>%
+  mutate(knockdown = ordered(knockdown, levels = mod_dendrogram_order_rl[,1])) %>%
+  arrange(condition, knockdown)
+
+# calculate the  distance between each centroid
+centroid_x_base_caf <- unique(model_data$centroid_x[model_data$ModelLabel == 'base_kras_caf'])
+centroid_y_base_caf <- unique(model_data$centroid_y[model_data$ModelLabel == 'base_kras_caf'])
+
+centroid_x_base_crc <- unique(model_data$centroid_x[model_data$ModelLabel == 'base_kras_crc'])
+centroid_y_base_crc <- unique(model_data$centroid_y[model_data$ModelLabel == 'base_kras_crc'])
+
+centroid_data <- model_data %>%
+  mutate(mod_dist_from_base_caf = sqrt((centroid_x - centroid_x_base_caf)^2 + (centroid_y - centroid_y_base_caf)^2)) %>%
+  mutate(mod_dist_from_base_crc = sqrt((centroid_x - centroid_x_base_crc)^2 + (centroid_y - centroid_y_base_crc)^2)) %>%
+  distinct(mod_dist_from_base_caf, .keep_all = TRUE) 
+
+model_wide <- centroid_data %>%
+  ungroup() %>%
+  select(c(centroid_x, centroid_y, knockdown, condition)) %>%
+  pivot_wider(names_from = condition, values_from = c(centroid_x, centroid_y)) %>%
+  mutate(mod_dist_btwn_knockdowns = sqrt((centroid_x_caf - centroid_x_crc)^2 + (centroid_y_caf - centroid_y_crc)^2)) 
+
+# calculate the distance of each x y point to the centroid, grouped by model
+variance_data <- model_data %>%
+  ungroup() %>%
+  mutate(mod_dist = sqrt((X - centroid_x)^2 + (Y - centroid_y)^2)) %>%
+  group_by(ModelLabel) %>%
+  mutate(avg_euc_dist = mean(mod_dist)) %>%
+  mutate(sd_euc_dist = sd(mod_dist)) %>%
+  group_by(condition) %>%
+  mutate(avg_euc_dist_per_condition = mean(mod_dist)) %>%
+  distinct(avg_euc_dist, sd_euc_dist, .keep_all = TRUE) #%>%
+ # mutate(model_label = str_extract(Model, "^.+(?=\\s)")) 
+
+full_descriptor <- full_join(centroid_data, variance_data) %>% select(-c(mod_dist, X, Y, UniqueLabel))
+
+full_descriptor <- bind_cols(rep(model_labels_dendro, 2), full_descriptor)
+colnames(full_descriptor)[1] <- "Model"
+```
+
+# plot representation learning projection of samples, color by rxn and percent
+```{r, fig.width=14, fig.height=12}
+new_color_df <- tibble(model_cond = paste(model_labels_dendro, c(rep("CCM", length(model_labels_dendro)), rep("CRC", length(model_labels_dendro))), sep = "_"),
+                       colors = c(custom_ccm_colors, custom_crc_colors)) 
+
+model_data_rl <- model_data %>%
+  mutate(condition = case_when(str_detect(ModelLabel, pattern = "caf") ~ "CCM",
+                               str_detect(ModelLabel, pattern = "crc") ~ "CRC")) %>%
+  mutate(ModelLabel = ordered(ModelLabel, levels = unique(model_data$ModelLabel))) 
+
+new_color_df <- bind_cols(new_color_df, unique(model_data$ModelLabel))
+colnames(new_color_df)[3] <- "ModelLabel"
+
+# Figure 1A
+ggplot() +
+  geom_point(data=model_data_rl, aes(x=X, y=Y, color=ModelLabel, shape=condition), size = 2, alpha=0.7) +
+  geom_point(data=variance_data, aes(x=centroid_x, y=centroid_y), color='white', fill = "black", size = 3, shape=23) +
+  geom_text_repel(data=full_descriptor, aes(x=centroid_x, y=centroid_y, label=Model), nudge_y=5, box.padding = 1.5) +
+  labs(shape = "Condition",
+       color = "Model",) +
+  scale_color_manual(values = new_color_df$colors,
+                     labels = model_labels_dendro,
+                     guide = guide_legend(
+                       override.aes = list(
+                         color = new_color_df$colors[1:13]  
+                       ),
+                       title = "Model"
+                     )) +
+  scale_shape_manual(values=c(16, 3), labels = c("CCM", "CRC")) +
+  theme_bw() +
+  theme(text = element_text(size=1),
+        legend.key.size = unit(1, 'cm'), 
+        legend.key.height = unit(1, 'cm'), 
+        legend.key.width = unit(1, 'cm'), 
+        legend.title = element_text(size=18), 
+        legend.text = element_text(size=16),
+        axis.text = element_text(size=16),
+        axis.title = element_text(size=18),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()
+        ) +
+    xlab("X") +
+  ylab("Y") +
+   guides(colour = guide_legend(override.aes = list(alpha = 1, size=5)),
+          shape = guide_legend(override.aes = list(size = 5)))
+
+
+#ggsave(filename = "all_samples_rep_plot_newpal6.pdf", width = 14, height = 12)
+```
+
+# organize distance of points to centroid into tables
+```{r}
+full_descriptor_fortab <- full_descriptor %>%
+  mutate(mod_dist_from_base_caf = case_when(condition == "caf" ~ mod_dist_from_base_caf,
+                                            condition == "crc" ~ NA_real_)) %>%
+  mutate(mod_dist_from_base_crc = case_when(condition == "crc" ~ mod_dist_from_base_crc,
+                                            condition == "caf" ~ NA_real_)) %>%
+   mutate(ModelLabel = ordered(ModelLabel, levels = new_color_df$ModelLabel)) %>%
+   arrange(ModelLabel) %>%
+  mutate(Model = ordered(Model, levels = model_labels_dendro)) %>%
+   arrange(Model)
+
+fd_ccm <- full_descriptor_fortab %>%
+  filter(condition == "caf")  %>%
+  select(-c(centroid_x, centroid_y, ModelLabel, knockdown, avg_euc_dist_per_condition, mod_dist_from_base_crc, condition)) %>%
+  rename("Mean Point to Centroid Distance (CCM)" = "avg_euc_dist",
+         "Distance from Base Model (CCM)" = "mod_dist_from_base_caf",
+         "SD Point to Centroid Distance (CCM)" = "sd_euc_dist")
+
+fd_crc <- full_descriptor_fortab %>%
+  filter(condition == "crc")  %>%
+  select(-c(centroid_x, centroid_y, ModelLabel, knockdown, avg_euc_dist_per_condition, mod_dist_from_base_caf, condition)) %>%
+  rename("Mean Point to Centroid Distance (CRC)" = "avg_euc_dist",
+         "Distance from Base Model (CRC)" = "mod_dist_from_base_crc", 
+         "SD Point to Centroid Distance (CRC)" = "sd_euc_dist")
+
+rep_learning_table1 <- full_join(fd_ccm, fd_crc)
+
+model_wide_fortab <- model_wide %>%
+  select(-c(centroid_x_caf, centroid_y_caf, centroid_x_crc, centroid_y_crc)) %>%
+  mutate(knockdown = ordered(knockdown, levels = ordered_knockdown_list)) 
+
+model_wide_fortab <- bind_cols(model_labels_dendro, model_wide_fortab) %>%
+  select(-c(knockdown)) %>%
+  rename("Model" = "...1",
+         "Distance Between Knockdown Models" = "mod_dist_btwn_knockdowns")
+
+rep_learning_table2 <- full_join(rep_learning_table1, model_wide_fortab) %>%
+  relocate('Distance from Base Model (CRC)', .after = 'Distance from Base Model (CCM)') %>%
+  mutate(Model = ordered(Model, levels = model_labels_dendro)) %>%
+  arrange(Model)
+
+#Figure 1B
+# bar plot of the point to centroid distance for each model with sd error bars
+ggplot(full_descriptor_fortab, aes(x=condition, y=avg_euc_dist, fill=ModelLabel)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  geom_errorbar(aes(ymin=avg_euc_dist - sd_euc_dist, 
+                    ymax=avg_euc_dist + sd_euc_dist), 
+                width = 0.2, position = position_dodge(0.9)) +
+  labs( y = "Mean Point to Centroid Distance",
+        x= " ") +
+  theme_minimal() +
+  scale_fill_manual(values=new_color_df$colors) +
+  scale_x_discrete(labels = c("CCM", "CRC")) +
+  facet_grid(cols=vars(Model), switch = "x", scales = "free_x") +
+  theme(panel.spacing = unit(0, "lines"), 
+         strip.background = element_blank(),
+         strip.placement = "outside",
+         legend.position = "none",
+         text = element_text(size=16),
+        panel.grid.major.x = element_blank(),
+         panel.grid.minor.x = element_blank())
+
+#ggsave("rep-learning_spread-plot_newpal3.pdf", width = 19, height = 4)
+```
+
+# plot & table of distance between centroids
+```{r}
+btwn_models <- rep_learning_table2 %>%
+  select(Model, `Distance Between Knockdown Models`, "Distance from Base Model (CCM)" , "Distance from Base Model (CRC)") %>%
+  pivot_longer(cols = c(`Distance Between Knockdown Models`, `Distance from Base Model (CCM)`, `Distance from Base Model (CRC)`),
+               names_to = "Distance_Type", values_to = "Distance_Value") %>%
+  group_by(Distance_Type) %>%
+  mutate(avg_euc_dist = mean(Distance_Value, na.rm = TRUE),
+         sd_euc_dist = sd(Distance_Value, na.rm = TRUE)) %>%
+  filter(Distance_Value > 0) %>%
+  mutate(model_cond = case_when(
+    str_detect(Distance_Type, "CCM") ~ paste(Model, "CCM", sep = "_"),
+    str_detect(Distance_Type, "CRC") ~ paste(Model, "CRC", sep = "_"),
+    str_detect(Distance_Type, "Knockdown") ~ paste(Model, "CCM", sep = "_")
+  )) %>%
+  mutate(model_cond = ordered(model_cond, levels = new_color_df$model_cond)) %>%
+  arrange(model_cond)
+
+color_df_mod <- new_color_df %>% filter(model_cond %in% btwn_models$model_cond)
+
+# Figure 1A inset
+ggplot(btwn_models, aes(x=Distance_Value, y=Distance_Type)) +
+  geom_errorbar(aes(xmin=avg_euc_dist - sd_euc_dist, 
+                    xmax=avg_euc_dist + sd_euc_dist), 
+                width = 0.2, position = position_dodge(0.9)) +
+  geom_point(aes(x=avg_euc_dist, y=Distance_Type), 
+             color = "black", size = 3, shape = 3, position = position_dodge(width=0.2)) +
+    geom_beeswarm(aes(x=Distance_Value, y=Distance_Type), 
+                size = 5, cex=3.5, color = "white") +
+  geom_beeswarm(aes(x=Distance_Value, y=Distance_Type, color=model_cond), 
+                size = 5, cex=3.5) +
+  scale_color_manual(labels = color_df_mod$model_cond, values=color_df_mod$colors, guide = "none") +
+  scale_y_discrete(labels = c("CCM & CRC", "CCM & Base", "CRC & Base")) +
+  theme_bw() +
+  labs(x = "Distance Between Centroids",
+       y= " ") +
+xlim(1, 66) +
+  theme(text = element_text(size=20))
+
+# write_csv(rep_learning_table2, file = "rep_learning_table_w-sd_newpal3.csv")
+# ggsave("rep-learning_spread-plot_btwn_models_newpal3.pdf", width = 8, height = 8)
+```
+
+# calculate the percent overlap between clusters
+```{r, fig.width=10, fig.height=8}
+model_labels_extra <- c("Base Model CCM", "LDH 40% CCM", "LDH 20% CCM", "PGAM 100% CCM", "PYK 100% CCM", "HK 80% CCM", "ENO 100% CCM", "GAPDH 60% CCM", "HK 100% CCM", "HPI 100% CCM", "G6PDH 100% CCM", "HPI 80% CCM", "ALDO 60% CCM", "Base Model CRC", "LDH 40% CRC", "LDH 20% CRC", "PGAM 100% CRC", "PYK 100% CRC", "HK 80% CRC", "ENO 100% CRC", "GAPDH 60% CRC", "HK 100% CRC", "HPI 100% CRC", "G6PDH 100% CRC", "HPI 80% CRC", "ALDO 60% CRC")
+
+model_labels_ugly <- unique(model_data$ModelLabel)
+
+mod_labz <- tibble(model_labels_ugly, model_labels_extra) %>%
+  rename(ModelLabel = model_labels_ugly, Model = model_labels_extra)
+
+model_data <- full_join(model_data, mod_labz) %>%
+  mutate(Model = ordered(Model, levels = model_labels_extra)) %>%
+  arrange(Model)
+
+# fxn to calculate intersection area & percent overlap
+calc_intersection_area <- function(points1, points2) {
+  intersection <- intersectn(points1[, c("X", "Y")], points2[, c("X", "Y")])
+  
+  #percent overlap 
+  area1 <- intersection$ch1$area
+  area2 <- intersection$ch2$area
+  int_area <- intersection$ch$area
+
+  percent_overlap <- (int_area / (area1 + area2 - int_area) ) * 100
+  return(percent_overlap)
+}
+
+# apply fxn to all model combinations
+intersection_results_both <- list()
+for (i in 1:length(unique(model_data$Model))) {
+  for (j in 1:length(unique(model_data$Model)) ) {
+
+  model1 <- model_data %>%
+    filter(Model == unique(model_data$Model)[i])
+
+  model2 <- model_data %>%
+    filter(Model == unique(model_data$Model)[j])
+
+  intersection_area <- calc_intersection_area(model1[, c("X", "Y")], model2[, c("X", "Y")])
+
+  int_name <- paste(unique(model_data$Model)[i], unique(model_data$Model)[j], sep = "_")
+
+  intersection_results_both[[int_name]] <- intersection_area
+  }
+} 
+
+intersection_data_both <- as.data.frame(enframe(intersection_results_both, name = "Model_Comparison", value = "Percent_Overlap"))
+intersection_data_both <- intersection_data_both %>%
+  separate(Model_Comparison, into = c("Model1", "Model2"), sep = "_") %>%
+  mutate(Percent_Overlap = as.numeric(Percent_Overlap)) %>%
+  mutate(Percent_Overlap=modify_if(Percent_Overlap,
+                                .p = is_empty,
+                                .f = ~NA_character_)) 
+
+intersection_data_both2 <- intersection_data_both %>%
+   filter(!duplicated(paste0(pmax(Model1, Model2), pmin(Model1, Model2)))) 
+```
+
+# Supplemental Figure 2 - corr plot of percent overlap between model clusters
+```{r}
+colpractice<- colorRampPalette(c("white", "#ffb000"))(100)
+
+intersection_data_btccm <- intersection_data_both2 %>%
+  filter(str_detect(Model1, pattern = "CCM")) %>%
+  filter(str_detect(Model2, pattern = "CCM")) %>%
+  mutate(Model1 = str_remove(Model1, pattern = " CCM")) %>%
+  mutate(Model2 = str_remove(Model2, pattern = " CCM")) 
+
+intersection_matrix_btccm <- intersection_data_btccm %>%
+  select(Model1, Model2, Percent_Overlap) %>%
+  pivot_wider(names_from = Model2, values_from = Percent_Overlap) %>%
+  column_to_rownames(var = "Model1") %>%
+  as.matrix()
+
+# pdf("ccm_corr4.pdf", width = 15, height = 12)
+
+ccm_corr <- corrplot(intersection_matrix_btccm, method = 'color', is.corr = FALSE, number.digits = 0, outline = TRUE, addCoef.col ='black', number.cex = 1.5, cl.ratio = 0.05, type = 'upper', na.label = " ", col.lim = c(0,100.0001), cl.pos = 'n', addgrid.col = 'lightgray', tl.pos = 'tl', col = colpractice, tl.cex = 1.5, tl.col = "black")
+
+# dev.off()
+
+intersection_data_btcrc <- intersection_data_both2 %>%
+  filter(str_detect(Model1, pattern = "CRC")) %>%
+  filter(str_detect(Model2, pattern = "CRC")) %>% 
+  mutate(Model1 = str_remove(Model1, pattern = " CRC")) %>%
+  mutate(Model2 = str_remove(Model2, pattern = " CRC"))
+
+intersection_matrix_btcrc <- intersection_data_btcrc %>%
+  select(Model1, Model2, Percent_Overlap) %>%
+  pivot_wider(names_from = Model1, values_from = Percent_Overlap) %>%
+  column_to_rownames(var = "Model2") %>%
+  as.matrix()
+
+# pdf("crc_corr4.pdf", width = 15, height = 12)
+
+crc_corr <- corrplot(intersection_matrix_btcrc, method = 'color', is.corr = FALSE, number.digits = 0, outline = TRUE, addCoef.col ='black', number.cex = 1.5, cl.ratio = 0.05, type = 'lower', na.label = " ", col.lim = c(0,100.0001), addgrid.col = 'lightgray', tl.pos = 'tl', col = colpractice, tl.cex = 1.5, cl.cex = 1.5, tl.col = "black", cl.pos = 'n')
+
+# dev.off()
+```
+
+
+
+
+
+
+
+
+
+
+
+
