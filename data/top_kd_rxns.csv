@@ -1,0 +1,13 @@
+rxn_number,percent_as_deci,reaction
+6,0.6,kras_crc_60_4_ALDO
+2,1,kras_crc_100_0_HK
+14,1,kras_crc_100_12_ENO
+13,1,kras_crc_100_11_PGAM
+3,1,kras_crc_100_1_HPI
+15,1,kras_crc_100_13_PYK
+2,0.8,kras_crc_80_0_HK
+43,0.4,kras_crc_40_41_LDH
+8,0.6,kras_crc_60_6_GAPDH
+17,1,kras_crc_100_15_G6PDH
+43,0.2,kras_crc_20_41_LDH
+3,0.8,kras_crc_80_1_HPI
